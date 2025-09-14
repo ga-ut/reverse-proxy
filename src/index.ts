@@ -1,4 +1,4 @@
-import { type Server, serve } from "bun";
+import type { Server } from "bun";
 
 type HostMap = Record<string, string>;
 
@@ -139,13 +139,21 @@ async function proxyFetch(req: Request, server: Server): Promise<Response> {
 function startHttpProxy() {
   const hostname = CONFIG.http?.host ?? "0.0.0.0";
   const port = CONFIG.http?.port ?? 80;
-  const server = serve({
-    hostname,
-    port,
-    fetch: (req, s) => proxyFetch(req, s),
-  });
-  console.log(`🛡️  HTTP proxy listening at http://${hostname}:${port}`);
-  return server;
+  try {
+    const server = Bun.serve({
+      hostname,
+      port,
+      fetch: (req, s) => proxyFetch(req, s),
+    });
+    console.log(`🛡️  HTTP proxy listening at http://${hostname}:${port}`);
+    return server;
+  } catch (err) {
+    console.error(
+      `[proxy] Failed to bind server at ${hostname}:${port}. If using 80/443, ensure CAP_NET_BIND_SERVICE is enabled and port is free.`,
+      err
+    );
+    throw err;
+  }
 }
 
 if (CONFIG.http?.enabled !== false) {
