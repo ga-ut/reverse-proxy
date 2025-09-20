@@ -48,11 +48,12 @@ forward plain HTTP to this proxy to keep responsibilities separate.
 
 ## Systemd Service
 
-- Use the provided template `reverse-proxy.service.example` and copy it:
-  - `cp reverse-proxy.service.example reverse-proxy.service`
-  - Edit `User`, `Group`, `WorkingDirectory`, and PATH to match your server
-  - If binding to 80/443, uncomment the CAP_NET_BIND_SERVICE lines
-- Install and start:
+- Auto-install with Bun:
+  - `bun scripts/install-service.ts --user deploy --working-dir /srv/reverse-proxy --start`
+  - Add `--enable-cap-net-bind` when you need to listen on ports 80/443
+  - Use `--dry-run` to preview the generated unit file without touching systemd
+- Manual path (same template as the script uses):
+  - Copy `reverse-proxy.service.example` and adjust `User`, `Group`, `WorkingDirectory`, and PATH
   - `sudo cp reverse-proxy.service /etc/systemd/system/`
   - `sudo systemctl daemon-reload`
   - `sudo systemctl enable --now reverse-proxy`
