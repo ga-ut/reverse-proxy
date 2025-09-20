@@ -6,9 +6,11 @@ path/query preservation, X-Forwarded-\* headers, and optional IP allowlist.
 ## Run
 
 ```sh
-bun src/index.ts
+# run with config in the current directory
+bun src/index.ts --config ./proxy.config.json
+
 # or with HMR during development
-bun --hot src/index.ts
+bun --hot src/index.ts --config ./proxy.config.json
 ```
 
 ## Configure
@@ -40,10 +42,24 @@ Create `proxy.config.json` at the repo root. You can copy the example or generat
 TLS is intentionally out-of-scope here; terminate TLS upstream (DNS/LB) and
 forward plain HTTP to this proxy to keep responsibilities separate.
 
+## Package & Distribute
+
+Ship an executable build so others can run the proxy without cloning the repo.
+
+1. `bun install`
+2. `bun run build` → emits `dist/reverse-proxy` for your current platform
+3. Publish the package (`npm publish`) or attach the binary to a release archive
+4. Consumers can execute it directly:
+   - `bunx @ga-ut/reverse-proxy --config ./proxy.config.json`
+   - `npx --yes @ga-ut/reverse-proxy --config ./proxy.config.json`
+
+> **Cross-platform note:** the binary produced by `bun build --compile` targets the
+> host OS/architecture. Publish separate builds per platform (e.g. macOS, Linux)
+> or run the build step on each release target before packaging.
+
 ## Deploy
 
-- Copy this `proxy/` folder to a new repository
-- Keep `proxy.config.json` alongside `src/index.ts`
+- Keep `proxy.config.json` alongside the runtime (or pass `--config /path/to/proxy.config.json`)
 - Run with a process manager (e.g., systemd) and health checks on the bound port
 
 ## Systemd Service

@@ -2,14 +2,25 @@
   "name": "@ga-ut/reverse-proxy",
   "version": "0.1.0",
   "description": "Standalone Bun-based reverse proxy with host routing, path/query preservation, X-Forwarded headers, and optional IP allowlist.",
-  "module": "index.ts",
+  "module": "src/index.ts",
   "type": "module",
   "main": "src/index.ts",
+  "bin": {
+    "reverse-proxy": "dist/reverse-proxy"
+  },
+  "files": [
+    "dist",
+    "proxy.config.example.json",
+    "README.md"
+  ],
   "scripts": {
     "dev": "bun --hot src/index.ts",
-    "start": "bun src/index.ts"
+    "start": "bun src/index.ts",
+    "build": "bun build src/index.ts --compile --target bun --outfile dist/reverse-proxy",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "bun run build"
   },
-  "private": true,
+  "private": false,
   "devDependencies": {
     "@types/bun": "latest"
   },
