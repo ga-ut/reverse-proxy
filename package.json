@@ -1,7 +1,15 @@
 {
   "name": "@ga-ut/reverse-proxy",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Standalone Bun-based reverse proxy with host routing, path/query preservation, X-Forwarded headers, and optional IP allowlist.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ga-ut/reverse-proxy.git"
+  },
+  "homepage": "https://github.com/ga-ut/reverse-proxy#readme",
+  "bugs": {
+    "url": "https://github.com/ga-ut/reverse-proxy/issues"
+  },
   "module": "src/index.ts",
   "type": "module",
   "main": "src/index.ts",
