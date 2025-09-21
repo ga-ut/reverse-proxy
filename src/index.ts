@@ -2,6 +2,7 @@ import type { Server } from "bun";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import pkgJson from "../package.json" assert { type: "json" };
+import { installSystemdService } from "./systemd";
 
 type HostMap = Record<string, string>;
 
@@ -35,6 +36,19 @@ interface CliOptions extends RunOptions {
   help: boolean;
   version: boolean;
   unknown: string[];
+  installService?: boolean;
+  noService: boolean;
+  serviceName?: string;
+  serviceUser?: string;
+  serviceGroup?: string;
+  serviceWorkingDir?: string;
+  bunBinary?: string;
+  servicePath?: string;
+  serviceDryRun: boolean;
+  serviceForce?: boolean;
+  serviceCapNetBind?: boolean;
+  serviceExtraArgs: string[];
+  serviceEnv: string[];
 }
 
 class UnknownHostError extends Error {
@@ -254,22 +268,35 @@ export async function runProxy(options: RunOptions = {}) {
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { help: false, version: false, unknown: [], configPath: undefined };
+  const options: CliOptions = {
+    help: false,
+    version: false,
+    unknown: [],
+    configPath: undefined,
+    noService: false,
+    serviceDryRun: false,
+    serviceExtraArgs: [],
+    serviceEnv: [],
+  };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === undefined) {
       continue;
     }
+    const consumeValue = () => {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith("-")) {
+        throw new Error(`Missing value for ${arg}`);
+      }
+      i += 1;
+      return next;
+    };
+
     switch (arg) {
       case "-c":
       case "--config": {
-        const next = argv[i + 1];
-        if (!next || next.startsWith("-")) {
-          throw new Error("Missing value for --config");
-        }
-        options.configPath = next;
-        i += 1;
+        options.configPath = consumeValue();
         break;
       }
       case "-h":
@@ -279,6 +306,50 @@ function parseArgs(argv: string[]): CliOptions {
       case "-v":
       case "--version":
         options.version = true;
+        break;
+      case "--install-service":
+        options.installService = true;
+        break;
+      case "--no-service":
+      case "--foreground":
+        options.noService = true;
+        break;
+      case "--service-name":
+        options.serviceName = consumeValue();
+        break;
+      case "--service-user":
+        options.serviceUser = consumeValue();
+        break;
+      case "--service-group":
+        options.serviceGroup = consumeValue();
+        break;
+      case "--service-working-dir":
+        options.serviceWorkingDir = consumeValue();
+        break;
+      case "--service-binary":
+      case "--bun-binary":
+        options.bunBinary = consumeValue();
+        break;
+      case "--service-path":
+        options.servicePath = consumeValue();
+        break;
+      case "--service-force":
+        options.serviceForce = true;
+        break;
+      case "--service-no-overwrite":
+        options.serviceForce = false;
+        break;
+      case "--service-dry-run":
+        options.serviceDryRun = true;
+        break;
+      case "--with-cap-net-bind":
+        options.serviceCapNetBind = true;
+        break;
+      case "--service-extra-arg":
+        options.serviceExtraArgs.push(consumeValue());
+        break;
+      case "--service-env":
+        options.serviceEnv.push(consumeValue());
         break;
       case "--":
         options.unknown.push(...argv.slice(i + 1));
@@ -293,16 +364,47 @@ function parseArgs(argv: string[]): CliOptions {
   return options;
 }
 
+function parseEnvPairs(pairs: string[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const entry of pairs) {
+    const eq = entry.indexOf("=");
+    if (eq === -1) {
+      throw new Error(`Expected KEY=VALUE but received: ${entry}`);
+    }
+    const key = entry.slice(0, eq).trim();
+    const value = entry.slice(eq + 1).trim();
+    if (!key) {
+      throw new Error(`Environment key missing in: ${entry}`);
+    }
+    env[key] = value;
+  }
+  return env;
+}
+
 function printUsage() {
   console.log(`Bun Reverse Proxy ${VERSION}\n`);
   console.log("Usage: reverse-proxy [options]\n");
   console.log("Options:");
-  console.log("  -c, --config <path>   Path to proxy.config.json (defaults to CWD)");
-  console.log("  -h, --help            Show this message");
-  console.log("  -v, --version         Print version");
+  console.log("  -c, --config <path>       Path to proxy.config.json (defaults to CWD)");
+  console.log("  -h, --help                Show this message");
+  console.log("  -v, --version             Print version");
+  console.log("  --install-service         Force systemd installation (default when run as root)");
+  console.log("  --no-service, --foreground  Run in foreground even if root");
+  console.log("  --service-name <name>     Override systemd unit name (default: reverse-proxy)");
+  console.log("  --service-user <user>     Run service as this user (default: SUDO_USER or root)");
+  console.log("  --service-group <group>   Run service under this group (default: same as user)");
+  console.log("  --service-working-dir <dir>  Working directory for systemd unit (default: config dir)");
+  console.log("  --service-path <path>     Override unit file location");
+  console.log("  --service-binary <path>   bun executable to use in ExecStart");
+  console.log("  --service-extra-arg <arg> Append extra argument to ExecStart (repeatable)");
+  console.log("  --with-cap-net-bind       Enable CAP_NET_BIND_SERVICE in systemd unit");
+  console.log("  --service-dry-run         Print unit file without writing or calling systemctl");
+  console.log("  --service-no-overwrite    Abort if service file already exists");
+  console.log("  --service-env KEY=VALUE   Add Environment entry to the unit (repeatable)");
   console.log("\nExamples:");
   console.log("  bun src/index.ts --config ./proxy.config.json");
-  console.log("  bunx @ga-ut/reverse-proxy --config ./proxy.config.json");
+  console.log("  sudo bunx @ga-ut/reverse-proxy --config /etc/reverse-proxy.json");
+  console.log("  sudo bunx @ga-ut/reverse-proxy --config ./proxy.json --no-service");
 }
 
 async function main() {
@@ -322,6 +424,54 @@ async function main() {
     for (const extra of args.unknown) {
       console.warn(`[proxy] Ignoring unknown argument: ${extra}`);
     }
+  }
+
+  const runningAsRoot = typeof process.getuid === "function" ? process.getuid() === 0 : false;
+  const shouldInstallService = args.installService ?? (runningAsRoot && !args.noService);
+
+  if (shouldInstallService) {
+    if (!args.configPath) {
+      console.error("[proxy] --config is required when installing as a service.");
+      process.exit(1);
+    }
+
+    let parsedConfig: ProxyConfig;
+    try {
+      parsedConfig = await loadConfig(args.configPath);
+    } catch (err) {
+      console.error("[proxy] Failed to parse config before installing service:", err);
+      process.exit(1);
+      return;
+    }
+
+    let envOverrides: Record<string, string> = {};
+    try {
+      envOverrides = parseEnvPairs(args.serviceEnv);
+    } catch (err) {
+      console.error("[proxy] Failed to parse --service-env:", err);
+      process.exit(1);
+    }
+
+    try {
+      await installSystemdService({
+        configPath: args.configPath,
+        serviceName: args.serviceName,
+        serviceUser: args.serviceUser,
+        serviceGroup: args.serviceGroup,
+        workingDir: args.serviceWorkingDir,
+        servicePath: args.servicePath,
+        bunBinary: args.bunBinary,
+        enableCapNetBind: args.serviceCapNetBind ?? parsedConfig.http.port <= 1024,
+        additionalArgs: args.serviceExtraArgs,
+        env: envOverrides,
+        force: args.serviceForce,
+        dryRun: args.serviceDryRun,
+      });
+    } catch (err) {
+      console.error("[proxy] Failed to install systemd service:", err);
+      process.exit(1);
+    }
+    return;
   }
 
   try {

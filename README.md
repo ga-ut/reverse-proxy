@@ -11,6 +11,9 @@ bun src/index.ts --config ./proxy.config.json
 
 # or with HMR during development
 bun --hot src/index.ts --config ./proxy.config.json
+
+# running as root automatically installs/updates a systemd service
+sudo bunx @ga-ut/reverse-proxy --config ./proxy.config.json
 ```
 
 ## Configure
@@ -18,9 +21,11 @@ bun --hot src/index.ts --config ./proxy.config.json
 Create `proxy.config.json` at the repo root. You can copy the example or generate it with one command.
 
 - Copy the example:
+
   - `cp proxy.config.example.json proxy.config.json`
 
 - Or create it in one shot (copy/paste):
+
   ```sh
   cat > proxy.config.json <<'JSON'
   {
@@ -64,13 +69,15 @@ Ship an executable build so others can run the proxy without cloning the repo.
 
 ## Systemd Service
 
-- Auto-install with Bun:
+- Easiest path (requires sudo + systemd):
+  - `sudo bunx @ga-ut/reverse-proxy --config /etc/reverse-proxy.json`
+  - Running as root writes `/etc/systemd/system/reverse-proxy.service` that runs
+    `bun start -- --config /etc/reverse-proxy.json` inside the config directory,
+    exports `PROXY_CONFIG`, reloads systemd, enables, and restarts the unit.
+  - Override defaults with flags like `--service-name`, `--service-user`, `--service-path`,
+    `--service-binary` (custom bun path), `--service-env KEY=VALUE`, or disable automation via `--no-service`.
+- Advanced/custom install:
   - `bun scripts/install-service.ts --user deploy --working-dir /srv/reverse-proxy --start`
   - Add `--enable-cap-net-bind` when you need to listen on ports 80/443
   - Use `--dry-run` to preview the generated unit file without touching systemd
-- Manual path (same template as the script uses):
-  - Copy `reverse-proxy.service.example` and adjust `User`, `Group`, `WorkingDirectory`, and PATH
-  - `sudo cp reverse-proxy.service /etc/systemd/system/`
-  - `sudo systemctl daemon-reload`
-  - `sudo systemctl enable --now reverse-proxy`
-  - Logs: `journalctl -u reverse-proxy -f`
+  - Or copy `reverse-proxy.service.example`, adjust it, and install manually.
