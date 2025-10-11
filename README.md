@@ -1,7 +1,8 @@
 # Bun Reverse Proxy
 
 Standalone Bun-based reverse proxy. Domain-based routing with JSON config,
-path/query preservation, X-Forwarded-\* headers, and optional IP allowlist.
+path/query preservation, X-Forwarded-\* headers, optional TLS termination,
+and IP allowlists.
 
 ## Run
 
@@ -35,7 +36,13 @@ Create `proxy.config.json` at the repo root. You can copy the example or generat
       "api.example.com": "http://127.0.0.1:4000"
     },
     "requireExplicitHost": false,
-    "allowIps": []
+    "allowIps": [],
+    "tls": {
+      "enabled": false,
+      "certPath": "./certs/example.crt",
+      "keyPath": "./certs/example.key",
+      "caPath": "./certs/ca-bundle.crt"
+    }
   }
   JSON
   ```
@@ -43,9 +50,14 @@ Create `proxy.config.json` at the repo root. You can copy the example or generat
 - `routes`: hostname (lowercase, no port) → target base URL
 - `requireExplicitHost`: if true, unknown host returns 404 and logs an error
 - `allowIps`: empty allows all; otherwise only listed IPs allowed
+- `tls.certPath` & `tls.keyPath`: PEM-encoded certificate and private key. Relative paths resolve against the config file directory; use absolute paths for keys stored in `/etc/ssl/private`.
+- `tls.caPath`: optional extra trust chain (string or array). Omit if you trust the system bundle.
+- `tls.passphrase`: optional passphrase used to decrypt the private key when it is encrypted.
+- Omit or set `tls.enabled` to `false` to skip TLS; the proxy stays HTTP-only.
 
-TLS is intentionally out-of-scope here; terminate TLS upstream (DNS/LB) and
-forward plain HTTP to this proxy to keep responsibilities separate.
+Set `tls.enabled` to `true` only after pointing at real certificate and key files.
+
+> **Key security:** when running under `systemctl`, ensure the service user can read the key file without exposing it broadly (e.g., group-readable in `/etc/ssl/private`).
 
 ## Package & Distribute
 
@@ -66,6 +78,7 @@ Ship an executable build so others can run the proxy without cloning the repo.
 
 - Keep `proxy.config.json` alongside the runtime (or pass `--config /path/to/proxy.config.json`)
 - Run with a process manager (e.g., systemd) and health checks on the bound port
+- Ensure the configured service user can read the TLS key file (e.g., place it in `/etc/ssl/private` and adjust group ownership instead of loosening permissions)
 
 ## Systemd Service
 

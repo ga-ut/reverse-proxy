@@ -29,5 +29,6 @@
 
 ## Configuration & Security Tips
 - Protect production `proxy.config.json`; use the `PROXY_CONFIG` environment variable to point at managed paths.
-- Document where TLS termination lives whenever deployment changes move responsibilities.
+- When enabling TLS, keep certificate/private-key paths out of git, prefer absolute paths for material stored under `/etc/ssl/private`, and ensure the systemd service user has read access without world permissions.
+- Document whether TLS terminates inside the proxy or upstream so operators know where certificates and renewals live.
 - Validate new unit files with `bun scripts/install-service.ts --dry-run` before touching `/etc/systemd/system`.

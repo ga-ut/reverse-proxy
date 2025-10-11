@@ -1,10 +1,26 @@
 import type { Server } from "bun";
-import { isAbsolute, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import pkgJson from "../package.json" assert { type: "json" };
 import { installSystemdService } from "./systemd";
 
 type HostMap = Record<string, string>;
+
+interface RawTlsConfig {
+  enabled?: boolean;
+  certPath?: string;
+  keyPath?: string;
+  caPath?: string | string[];
+  passphrase?: string;
+}
+
+interface TlsConfig {
+  enabled: true;
+  certPath: string;
+  keyPath: string;
+  caPaths: string[];
+  passphrase?: string;
+}
 
 interface RawProxyConfig {
   http?: {
@@ -15,6 +31,7 @@ interface RawProxyConfig {
   routes?: HostMap;
   requireExplicitHost?: boolean;
   allowIps?: string[];
+  tls?: RawTlsConfig | null;
 }
 
 interface ProxyConfig {
@@ -26,6 +43,8 @@ interface ProxyConfig {
   routes: HostMap;
   requireExplicitHost: boolean;
   allowIps: string[];
+  tls: TlsConfig | null;
+  configDir: string;
 }
 
 interface RunOptions {
@@ -60,31 +79,41 @@ class UnknownHostError extends Error {
 
 const VERSION = (pkgJson as { version?: string }).version ?? "0.0.0";
 
-const FALLBACK_CONFIG: ProxyConfig = normalizeConfig({
+const CONFIG_DEFAULTS = {
   http: { enabled: true, host: "0.0.0.0", port: 80 },
   routes: { localhost: "http://127.0.0.1:3000" },
   requireExplicitHost: false,
-  allowIps: [],
-});
+  allowIps: [] as string[],
+} as const;
 
-function normalizeConfig(raw: RawProxyConfig | null | undefined): ProxyConfig {
+function normalizeConfig(
+  raw: RawProxyConfig | null | undefined,
+  baseDir: string
+): ProxyConfig {
   const routesEntries = Object.entries(raw?.routes ?? {}).map(([key, value]) => [
     key.trim().toLowerCase(),
     value.trim(),
   ]);
-  const routes = routesEntries.length > 0 ? Object.fromEntries(routesEntries) : { ...FALLBACK_CONFIG.routes };
+  const routes =
+    routesEntries.length > 0 ? Object.fromEntries(routesEntries) : { ...CONFIG_DEFAULTS.routes };
+
+  const http = {
+    enabled: raw?.http?.enabled ?? CONFIG_DEFAULTS.http.enabled,
+    host: raw?.http?.host ?? CONFIG_DEFAULTS.http.host,
+    port: raw?.http?.port ?? CONFIG_DEFAULTS.http.port,
+  };
 
   return {
-    http: {
-      enabled: raw?.http?.enabled ?? FALLBACK_CONFIG.http.enabled,
-      host: raw?.http?.host ?? FALLBACK_CONFIG.http.host,
-      port: raw?.http?.port ?? FALLBACK_CONFIG.http.port,
-    },
+    http,
     routes,
-    requireExplicitHost: raw?.requireExplicitHost ?? FALLBACK_CONFIG.requireExplicitHost,
+    requireExplicitHost: raw?.requireExplicitHost ?? CONFIG_DEFAULTS.requireExplicitHost,
     allowIps: (raw?.allowIps ?? []).map((item) => item.trim()).filter(Boolean),
+    tls: normalizeTls(raw?.tls, baseDir),
+    configDir: baseDir,
   };
 }
+
+const FALLBACK_CONFIG: ProxyConfig = normalizeConfig(null, process.cwd());
 
 function expandHome(path: string): string {
   if (!path.startsWith("~")) return path;
@@ -92,6 +121,65 @@ function expandHome(path: string): string {
   if (!home) return path;
   const remainder = path.slice(1).replace(/^[\\\/]+/, "");
   return remainder ? resolve(home, remainder) : home;
+}
+
+function resolveWithBase(path: string, baseDir: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    throw new Error("[proxy] Empty path encountered while resolving TLS configuration.");
+  }
+  const expanded = expandHome(trimmed);
+  return isAbsolute(expanded) ? expanded : resolve(baseDir, expanded);
+}
+
+function normalizeTls(raw: RawTlsConfig | null | undefined, baseDir: string): TlsConfig | null {
+  if (!raw) return null;
+
+  const certCandidate = raw.certPath?.trim();
+  const keyCandidate = raw.keyPath?.trim();
+  const wantsTls =
+    raw.enabled ?? Boolean(certCandidate && keyCandidate);
+
+  if (!wantsTls) {
+    return null;
+  }
+
+  if (!certCandidate || !keyCandidate) {
+    throw new Error("[proxy] TLS enabled but certPath or keyPath is missing.");
+  }
+
+  const caCandidates = raw.caPath === undefined ? [] : Array.isArray(raw.caPath) ? raw.caPath : [raw.caPath];
+  const caPaths = caCandidates
+    .map((entry) => entry?.trim())
+    .filter((entry): entry is string => Boolean(entry))
+    .map((entry) => resolveWithBase(entry, baseDir));
+
+  const certPath = resolveWithBase(certCandidate, baseDir);
+  const keyPath = resolveWithBase(keyCandidate, baseDir);
+  const passphrase = raw.passphrase?.trim();
+
+  return {
+    enabled: true,
+    certPath,
+    keyPath,
+    caPaths,
+    passphrase: passphrase && passphrase.length > 0 ? passphrase : undefined,
+  };
+}
+
+async function validateTlsFiles(config: ProxyConfig): Promise<void> {
+  const tls = config.tls;
+  if (!tls) return;
+
+  const candidates = [tls.certPath, tls.keyPath, ...tls.caPaths];
+  const checks = candidates.map(async (path) => {
+    const file = Bun.file(path);
+    if (!(await file.exists())) {
+      throw new Error(`[proxy] TLS file not found at ${path}`);
+    }
+  });
+
+  await Promise.all(checks);
 }
 
 function toFileURL(candidate: string | URL): URL {
@@ -109,7 +197,10 @@ async function readConfigCandidate(candidate: string | URL): Promise<{ config: P
 
   try {
     const raw = (await file.json()) as RawProxyConfig;
-    return { config: normalizeConfig(raw), url };
+    const baseDir = dirname(fileURLToPath(url));
+    const config = normalizeConfig(raw, baseDir);
+    await validateTlsFiles(config);
+    return { config, url };
   } catch (err) {
     console.error(`[proxy] Failed to parse config at ${url.pathname}`);
     throw err instanceof Error ? err : new Error(String(err));
@@ -156,6 +247,8 @@ async function loadConfig(configPath?: string): Promise<ProxyConfig> {
     routes: { ...FALLBACK_CONFIG.routes },
     requireExplicitHost: FALLBACK_CONFIG.requireExplicitHost,
     allowIps: [...FALLBACK_CONFIG.allowIps],
+    tls: FALLBACK_CONFIG.tls ? { ...FALLBACK_CONFIG.tls } : null,
+    configDir: FALLBACK_CONFIG.configDir,
   };
 }
 
@@ -241,13 +334,26 @@ async function proxyFetch(req: Request, server: Server, config: ProxyConfig): Pr
 function startHttpProxy(config: ProxyConfig) {
   const hostname = config.http.host;
   const port = config.http.port;
+  const tlsOptions = config.tls
+    ? {
+        key: Bun.file(config.tls.keyPath),
+        cert: Bun.file(config.tls.certPath),
+        ...(config.tls.caPaths.length > 0
+          ? { ca: config.tls.caPaths.map((path) => Bun.file(path)) }
+          : {}),
+        ...(config.tls.passphrase ? { passphrase: config.tls.passphrase } : {}),
+      }
+    : undefined;
+
   try {
     const server = Bun.serve({
       hostname,
       port,
       fetch: (req, s) => proxyFetch(req, s, config),
+      tls: tlsOptions,
     });
-    console.log(`🛡️  HTTP proxy listening at http://${hostname}:${port}`);
+    const scheme = config.tls ? "https" : "http";
+    console.log(`🛡️  ${scheme.toUpperCase()} proxy listening at ${scheme}://${hostname}:${port}`);
     return server;
   } catch (err) {
     console.error(
