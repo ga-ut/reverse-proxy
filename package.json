@@ -22,8 +22,8 @@
     "README.md"
   ],
   "scripts": {
-    "dev": "bun --hot src/index.ts",
-    "start": "bun src/index.ts",
+    "dev": "bun --hot src/index.ts --no-service",
+    "start": "bun src/index.ts --no-service",
     "build": "bun build src/index.ts --compile --target bun --outfile dist/reverse-proxy",
     "build:debug": "bun build src/index.ts --target bun --outfile dist/index.js",
     "clean": "rm -rf dist",
