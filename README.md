@@ -48,10 +48,12 @@ Create `proxy.config.json` at the repo root. You can copy the example or generat
   ```
 
 - `routes`: hostname (lowercase, no port) → target base URL
+- `http.redirect.enabled`: when `true` and TLS is configured, start a lightweight listener on `http.redirect.port` (default `80`) that issues a redirect with `http.redirect.statusCode` (default `307`) to the HTTPS port.
 - `requireExplicitHost`: if true, unknown host returns 404 and logs an error
 - `allowIps`: empty allows all; otherwise only listed IPs allowed
 - `tls.certPath` & `tls.keyPath`: PEM-encoded certificate and private key. Relative paths resolve against the config file directory; use absolute paths for keys stored in `/etc/ssl/private`.
-- `tls.caPath`: optional extra trust chain (string or array). Omit if you trust the system bundle.
+- `tls.requestClientCert`: set to `true` to require mutual TLS (client certificates). Default `false`.
+- `tls.caPath`: optional list/string of CA files used to validate client certificates **only** when `tls.requestClientCert` is `true`. Leave unset for standard HTTPS.
 - `tls.passphrase`: optional passphrase used to decrypt the private key when it is encrypted.
 - Omit or set `tls.enabled` to `false` to skip TLS; the proxy stays HTTP-only.
 

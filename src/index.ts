@@ -6,12 +6,25 @@ import { installSystemdService } from "./systemd";
 
 type HostMap = Record<string, string>;
 
+interface RawHttpRedirectConfig {
+  enabled?: boolean;
+  port?: number;
+  statusCode?: number;
+}
+
+interface HttpRedirectConfig {
+  enabled: boolean;
+  port: number;
+  statusCode: number;
+}
+
 interface RawTlsConfig {
   enabled?: boolean;
   certPath?: string;
   keyPath?: string;
   caPath?: string | string[];
   passphrase?: string;
+  requestClientCert?: boolean;
 }
 
 interface TlsConfig {
@@ -20,6 +33,7 @@ interface TlsConfig {
   keyPath: string;
   caPaths: string[];
   passphrase?: string;
+  requestClientCert: boolean;
 }
 
 interface RawProxyConfig {
@@ -27,6 +41,7 @@ interface RawProxyConfig {
     enabled?: boolean;
     host?: string;
     port?: number;
+    redirect?: RawHttpRedirectConfig | null;
   };
   routes?: HostMap;
   requireExplicitHost?: boolean;
@@ -39,6 +54,7 @@ interface ProxyConfig {
     enabled: boolean;
     host: string;
     port: number;
+    redirect: HttpRedirectConfig;
   };
   routes: HostMap;
   requireExplicitHost: boolean;
@@ -79,8 +95,14 @@ class UnknownHostError extends Error {
 
 const VERSION = (pkgJson as { version?: string }).version ?? "0.0.0";
 
+const HTTP_REDIRECT_DEFAULTS = {
+  enabled: false,
+  port: 80,
+  statusCode: 307,
+} as const;
+
 const CONFIG_DEFAULTS = {
-  http: { enabled: true, host: "0.0.0.0", port: 80 },
+  http: { enabled: true, host: "0.0.0.0", port: 80, redirect: HTTP_REDIRECT_DEFAULTS },
   routes: { localhost: "http://127.0.0.1:3000" },
   requireExplicitHost: false,
   allowIps: [] as string[],
@@ -97,10 +119,18 @@ function normalizeConfig(
   const routes =
     routesEntries.length > 0 ? Object.fromEntries(routesEntries) : { ...CONFIG_DEFAULTS.routes };
 
+  const rawRedirect = raw?.http?.redirect ?? null;
+  const redirect: HttpRedirectConfig = {
+    enabled: rawRedirect?.enabled ?? CONFIG_DEFAULTS.http.redirect.enabled,
+    port: rawRedirect?.port ?? CONFIG_DEFAULTS.http.redirect.port,
+    statusCode: rawRedirect?.statusCode ?? CONFIG_DEFAULTS.http.redirect.statusCode,
+  };
+
   const http = {
     enabled: raw?.http?.enabled ?? CONFIG_DEFAULTS.http.enabled,
     host: raw?.http?.host ?? CONFIG_DEFAULTS.http.host,
     port: raw?.http?.port ?? CONFIG_DEFAULTS.http.port,
+    redirect,
   };
 
   return {
@@ -157,6 +187,7 @@ function normalizeTls(raw: RawTlsConfig | null | undefined, baseDir: string): Tl
   const certPath = resolveWithBase(certCandidate, baseDir);
   const keyPath = resolveWithBase(keyCandidate, baseDir);
   const passphrase = raw.passphrase?.trim();
+  const requestClientCert = Boolean(raw.requestClientCert);
 
   return {
     enabled: true,
@@ -164,6 +195,7 @@ function normalizeTls(raw: RawTlsConfig | null | undefined, baseDir: string): Tl
     keyPath,
     caPaths,
     passphrase: passphrase && passphrase.length > 0 ? passphrase : undefined,
+    requestClientCert,
   };
 }
 
@@ -338,9 +370,10 @@ function startHttpProxy(config: ProxyConfig) {
     ? {
         key: Bun.file(config.tls.keyPath),
         cert: Bun.file(config.tls.certPath),
-        ...(config.tls.caPaths.length > 0
+        ...(config.tls.requestClientCert && config.tls.caPaths.length > 0
           ? { ca: config.tls.caPaths.map((path) => Bun.file(path)) }
           : {}),
+        ...(config.tls.requestClientCert ? { requestCert: true } : {}),
         ...(config.tls.passphrase ? { passphrase: config.tls.passphrase } : {}),
       }
     : undefined;
@@ -364,13 +397,61 @@ function startHttpProxy(config: ProxyConfig) {
   }
 }
 
+function startHttpRedirect(config: ProxyConfig) {
+  const redirect = config.http.redirect;
+  if (!redirect.enabled) {
+    return undefined;
+  }
+  if (!config.tls) {
+    console.warn("[proxy] HTTP redirect requested but TLS is disabled; skipping redirect listener.");
+    return undefined;
+  }
+  if (redirect.port === config.http.port) {
+    console.warn("[proxy] Redirect port matches TLS port; skipping redirect listener to avoid loops.");
+    return undefined;
+  }
+
+  const hostname = config.http.host;
+  const statusCode = redirect.statusCode;
+  try {
+    const server = Bun.serve({
+      hostname,
+      port: redirect.port,
+      fetch(req) {
+        const incoming = new URL(req.url);
+        const tlsPort = config.http.port;
+        const locationHost = tlsPort === 443 ? incoming.hostname : `${incoming.hostname}:${tlsPort}`;
+        const location = `https://${locationHost}${incoming.pathname}${incoming.search}`;
+        return new Response(null, {
+          status: statusCode,
+          headers: {
+            location,
+          },
+        });
+      },
+    });
+    console.log(
+      `[proxy] HTTP redirect listening at http://${hostname}:${redirect.port} → https://${hostname}:${config.http.port}`
+    );
+    return server;
+  } catch (err) {
+    console.error(
+      `[proxy] Failed to bind redirect server at ${hostname}:${redirect.port}.`,
+      err
+    );
+    throw err;
+  }
+}
+
 export async function runProxy(options: RunOptions = {}) {
   const config = await loadConfig(options.configPath);
   if (config.http.enabled === false) {
     console.warn("[proxy] HTTP proxy disabled by config.");
     return undefined;
   }
-  return startHttpProxy(config);
+  const server = startHttpProxy(config);
+  startHttpRedirect(config);
+  return server;
 }
 
 function parseArgs(argv: string[]): CliOptions {

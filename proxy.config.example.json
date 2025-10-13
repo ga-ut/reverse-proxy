@@ -2,7 +2,12 @@
   "http": {
     "enabled": true,
     "host": "0.0.0.0",
-    "port": 443
+    "port": 443,
+    "redirect": {
+      "enabled": false,
+      "port": 80,
+      "statusCode": 307
+    }
   },
   "routes": {
     "example.com": "http://127.0.0.1:3000",
@@ -14,6 +19,6 @@
     "enabled": false,
     "certPath": "./certs/example.crt",
     "keyPath": "./certs/example.key",
-    "caPath": "./certs/ca-bundle.crt"
+    "requestClientCert": false
   }
 }
